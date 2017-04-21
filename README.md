@@ -20,7 +20,7 @@ Download [image archive][dataset_download] and extract and do:
 ```
 mkdir data
 mv VOCdevkit/VOC2012/JPEGImages data/images
-mv VOCdevkit/VOC2012/SegmentationClass data/classes
+mv VOCdevkit/VOC2012/SegmentationClass data/labels
 rm -rf VOCdevkit
 ```
 
