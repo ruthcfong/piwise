@@ -1,9 +1,11 @@
+import os
 import numpy as np
 import torch
 
 from PIL import Image
 from argparse import ArgumentParser
 
+import torch.nn as nn
 from torch.optim import SGD, Adam
 from torch.autograd import Variable
 from torch.utils.data import DataLoader
@@ -11,7 +13,7 @@ from torchvision.transforms import Compose, CenterCrop, Normalize
 from torchvision.transforms import ToTensor, ToPILImage
 
 from piwise.dataset import VOC12
-from piwise.network import FCN8, FCN16, FCN32, UNet, PSPNet, SegNet
+from piwise.network import FCN8, FCN16, FCN32, UNet, PSPNet, SegNet, SegNet2
 from piwise.criterion import CrossEntropyLoss2d
 from piwise.transform import Relabel, ToLabel, Colorize
 from piwise.visualize import Dashboard
@@ -90,7 +92,8 @@ def train(args, model):
                 average = sum(epoch_loss) / len(epoch_loss)
                 print(f'loss: {average} (epoch: {epoch}, step: {step})')
             if args.steps_save > 0 and step % args.steps_save == 0:
-                filename = f'{args.model}-{epoch:03}-{step:04}.pth'
+                #filename = f'{args.model}-{epoch:03}-{step:04}.pth'
+                filename = f'{args.model}.pth'
                 torch.save(model.state_dict(), filename)
                 print(f'save: {filename} (epoch: {epoch}, step: {step})')
 
@@ -104,6 +107,14 @@ def evaluate(args, model):
     image_transform(label).save(args.label)
 
 def main(args):
+    gpu = [0,1]
+    use_mult_gpu = isinstance(gpu, list)
+    if use_mult_gpu:
+        os.environ['CUDA_VISIBLE_DEVICES'] = str(gpu).strip('[').strip(']')
+    else:
+        os.environ['CUDA_VISIBLE_DEVICES'] = '%d' % gpu
+    print(torch.cuda.device_count())
+
     Net = None
     if args.model == 'fcn8':
         Net = FCN8
@@ -119,12 +130,16 @@ def main(args):
         Net = PSPNet
     if args.model == 'segnet':
         Net = SegNet
+    if args.model == 'segnet2':
+        Net = SegNet2
     assert Net is not None, f'model {args.model} not available'
 
     model = Net(NUM_CLASSES)
 
     if args.cuda:
         model = model.cuda()
+        if use_mult_gpu:
+            model = nn.DataParallel(model)
     if args.state:
         try:
             model.load_state_dict(torch.load(args.state))

@@ -200,11 +200,12 @@ class UNet(nn.Module):
 
 class SegNetEnc(nn.Module):
 
-    def __init__(self, in_channels, out_channels, num_layers):
+    def __init__(self, in_channels, out_channels, num_layers, given_pool_inds = False):
         super().__init__()
+        self.given_pool_inds = given_pool_inds
+        self.upsample = nn.MaxUnpool2d(2) if self.given_pool_inds else nn.UpsamplingBilinear2d(scale_factor=2)
 
         layers = [
-            nn.UpsamplingBilinear2d(scale_factor=2),
             nn.Conv2d(in_channels, in_channels // 2, 3, padding=1),
             nn.BatchNorm2d(in_channels // 2),
             nn.ReLU(inplace=True),
@@ -221,8 +222,13 @@ class SegNetEnc(nn.Module):
         ]
         self.encode = nn.Sequential(*layers)
 
-    def forward(self, x):
-        return self.encode(x)
+    def forward(self, x, pool_inds = None):
+        if pool_inds is None:
+            assert(not self.given_pool_inds)
+            return self.encode(self.upsample(x))
+        else:
+            assert(self.given_pool_inds)
+            return self.encode(self.upsample(x, pool_inds))
 
 
 class SegNet(nn.Module):
@@ -233,16 +239,35 @@ class SegNet(nn.Module):
         # should be vgg16bn but at the moment we have no pretrained bn models
         decoders = list(models.vgg16(pretrained=True).features.children())
 
+        '''
         self.dec1 = nn.Sequential(*decoders[:5])
         self.dec2 = nn.Sequential(*decoders[5:10])
         self.dec3 = nn.Sequential(*decoders[10:17])
         self.dec4 = nn.Sequential(*decoders[17:24])
         self.dec5 = nn.Sequential(*decoders[24:])
+        '''
+
+        new_indices = []
+        new_decoders = []
+        for l in decoders:
+            if isinstance(l, nn.MaxPool2d):
+                #l.return_indices = True
+                new_indices.append(len(new_decoders)+1)
+            new_decoders.append(l)
+            if isinstance(l, nn.Conv2d):
+                new_decoders.append(nn.BatchNorm2d(l.out_channels))
+        assert(len(new_indices) == 5)
+
+        self.dec1 = nn.Sequential(*new_decoders[:new_indices[0]])
+        self.dec2 = nn.Sequential(*new_decoders[new_indices[0]:new_indices[1]])
+        self.dec3 = nn.Sequential(*new_decoders[new_indices[1]:new_indices[2]])
+        self.dec4 = nn.Sequential(*new_decoders[new_indices[2]:new_indices[3]])
+        self.dec5 = nn.Sequential(*new_decoders[new_indices[3]:new_indices[4]])
 
         # gives better results
-        for m in self.modules():
-            if isinstance(m, nn.Conv2d):
-                m.requires_grad = False
+        #for m in self.modules():
+        #    if isinstance(m, nn.Conv2d):
+        #        m.requires_grad = False
 
         self.enc5 = SegNetEnc(512, 512, 1)
         self.enc4 = SegNetEnc(1024, 256, 1)
@@ -270,6 +295,57 @@ class SegNet(nn.Module):
 
         return F.upsample_bilinear(self.final(enc1), x.size()[2:])
 
+class SegNet2(nn.Module):
+
+    def __init__(self, num_classes):
+        super().__init__()
+        decoders = list(models.vgg16(pretrained=True).features.children())
+        new_indices = []
+        new_decoders = []
+        for l in decoders:
+            if isinstance(l, nn.MaxPool2d):
+                l.return_indices = True
+                new_indices.append(len(new_decoders)+1)
+            new_decoders.append(l)
+            if isinstance(l, nn.Conv2d):
+                new_decoders.append(nn.BatchNorm2d(l.out_channels))
+        assert(len(new_indices) == 5)
+
+        self.dec1 = nn.Sequential(*new_decoders[:new_indices[0]])
+        self.dec2 = nn.Sequential(*new_decoders[new_indices[0]:new_indices[1]])
+        self.dec3 = nn.Sequential(*new_decoders[new_indices[1]:new_indices[2]])
+        self.dec4 = nn.Sequential(*new_decoders[new_indices[2]:new_indices[3]])
+        self.dec5 = nn.Sequential(*new_decoders[new_indices[3]:new_indices[4]])
+
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                m.requires_grad = False
+
+        self.enc5 = SegNetEnc(512, 512, 1, True)
+        self.enc4 = SegNetEnc(512, 256, 1, True)
+        self.enc3 = SegNetEnc(256, 128, 1, True)
+        self.enc2 = SegNetEnc(128, 64, 0, True)
+        self.enc1_up = nn.MaxUnpool2d(2)
+        self.enc1 = nn.Sequential(
+            nn.Conv2d(64, 64, 3, padding=1),
+            nn.BatchNorm2d(64),
+            nn.ReLU(inplace=True),
+        )
+        self.final = nn.Conv2d(64, num_classes, 3, padding=1)
+
+    def forward(self, x):
+        dec1, dec1_inds = self.dec1(x)
+        dec2, dec2_inds = self.dec2(dec1)
+        dec3, dec3_inds = self.dec3(dec2)
+        dec4, dec4_inds = self.dec4(dec3)
+        dec5, dec5_inds = self.dec5(dec4)
+        enc5 = self.enc5(dec5, dec5_inds)
+        enc4 = self.enc4(enc5, dec4_inds)
+        enc3 = self.enc3(enc4, dec3_inds)
+        enc2 = self.enc2(enc3, dec2_inds)
+        enc1 = self.enc1(self.enc1_up(enc2, dec1_inds))
+
+        return F.upsample_bilinear(self.final(enc1), x.size()[2:])
 
 class PSPDec(nn.Module):
 
